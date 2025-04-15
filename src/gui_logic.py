@@ -1,12 +1,22 @@
 # gui_logic.py
-from PySide6.QtWidgets import QMainWindow, QPushButton, QFileDialog, QTableWidgetItem, QVBoxLayout, QLineEdit, QLabel, \
-    QHeaderView
-from PySide6.QtCore import Qt, QTimer
-from gui import Ui_MainWindow
-import pyqtgraph as pg
-from collections import namedtuple
-import pandas as pd
+
+
+
+
+
 import os
+import json
+import shutil
+import pandas as pd
+import pyqtgraph as pg
+from datetime import datetime
+from collections import namedtuple
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QMainWindow, QPushButton, QFileDialog, QTableWidgetItem, QVBoxLayout, QLineEdit, QLabel, QHeaderView, QApplication
+)
+
+from gui import Ui_MainWindow
 
 DataRow = namedtuple('DataRow', ['with_substance', 'without_substance', 'result', 'labeled'])
 
@@ -21,6 +31,9 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
         self.animation_timer.timeout.connect(self.next_animation_frame)
         self.current_animation_row = None
         self.current_frame = 0
+        self.project_dir = "data"
+        self.state_file = os.path.join(self.project_dir, "project_state.json")
+        os.makedirs(self.project_dir, exist_ok=True)
         self.init_ui()
 
     def init_ui(self):
@@ -28,9 +41,6 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
         self.tableWidget.setHorizontalHeaderLabels([
             "Удалить", "С веществом", "Без вещества", "Результат", "Размеченные данные"
         ])
-        self.tableWidget.setRowCount(1)
-        self.data_rows.append(DataRow(None, None, None, None))
-        self.setup_row(0)
 
         self.tableWidget.itemSelectionChanged.connect(self.plot_selected_row)
         self.tableWidget.cellClicked.connect(self.handle_cell_click)
@@ -51,11 +61,24 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
         self.mark_button.clicked.connect(self.mark_data)
         self.control_layout.addWidget(self.mark_button)
 
+        self.reset_button = QPushButton("Сбросить таблицу")
+        self.reset_button.clicked.connect(self.reset_table)
+        self.control_layout.addWidget(self.reset_button)
+
+        # Новая кнопка для сохранения общего результата
+        self.save_all_button = QPushButton("Сохранить общий результат")
+        self.save_all_button.clicked.connect(self.save_all_labeled_data)
+        self.control_layout.addWidget(self.save_all_button)
+
         self.control_layout.addStretch()
 
         for i in range(4):
             self.tableWidget.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
-        self.setWindowTitle("Data Analysis Application")
+        self.setWindowTitle("Data Analysis Studio")
+
+        self.load_state()
+
+        QApplication.instance().aboutToQuit.connect(self.save_state)
 
     def setup_row(self, row):
         delete_btn = QPushButton("Удалить")
@@ -95,13 +118,28 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
         freq, gamma, src_nn = zip(*data)
         return freq, gamma, src_nn
 
+    def copy_file_to_project(self, file_name):
+        if not file_name:
+            return None
+        dest_file = os.path.join(self.project_dir, os.path.basename(file_name))
+        try:
+            shutil.copy2(file_name, dest_file)
+            return dest_file
+        except Exception as e:
+            self.statusbar.showMessage(f"Ошибка копирования файла: {str(e)}", 5000)
+            return None
+
     def load_file(self, row, column):
         file_name, _ = QFileDialog.getOpenFileName(
             self, "Выберите файл", "", "Text Files (*.txt);;CSV Files (*.csv);;All Files (*)"
         )
         if file_name:
             try:
-                with open(file_name, 'r', encoding='utf-8') as f:
+                dest_file = self.copy_file_to_project(file_name)
+                if not dest_file:
+                    return
+
+                with open(dest_file, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                 current_data = self.data_rows[row]
                 if column == 1:
@@ -121,7 +159,7 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                         raise ValueError("Нет данных в файле результата")
                 self.data_rows[row] = new_data
 
-                file_item = QTableWidgetItem(file_name.split('/')[-1])
+                file_item = QTableWidgetItem(os.path.basename(dest_file))
                 file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
                 self.tableWidget.setItem(row, column, file_item)
                 self.tableWidget.removeCellWidget(row, column)
@@ -143,8 +181,15 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
             del self.data_rows[row]
             self.plot_selected_row()
 
+    def reset_table(self):
+        self.stop_animation()
+        self.tableWidget.setRowCount(1)
+        self.data_rows = [DataRow(None, None, None, None)]
+        self.setup_row(0)
+        self.plot_widget.clear()
+        self.statusbar.showMessage("Таблица сброшена", 5000)
+
     def plot_selected_row(self):
-        # Останавливаем анимацию без обратного вызова plot_selected_row
         self.animation_timer.stop()
         self.current_animation_row = None
 
@@ -245,14 +290,52 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
             'label': [l for _, _, l in labeled_data for _ in range(len(labeled_data[0][0]))]
         })
 
-        output_file = f"labeled_data_row_{row}.csv"
+        output_file = os.path.join(self.project_dir, f"labeled_data_row_{row}.csv")
         df.to_csv(output_file, index=False)
 
         self.data_rows[row] = DataRow(data.with_substance, data.without_substance,
-                                      data.result, labeled_data)  # Храним список кортежей вместо DataFrame
-        self.tableWidget.setItem(row, 4, QTableWidgetItem(output_file))
+                                      data.result, labeled_data)
+        self.tableWidget.setItem(row, 4, QTableWidgetItem(os.path.basename(output_file)))
 
         self.statusbar.showMessage(f"Разметка завершена, сохранено в {output_file}", 5000)
+
+    def save_all_labeled_data(self):
+        """Сохранение всех размеченных данных в один DataFrame"""
+        all_labeled_data = []
+        for row, data in enumerate(self.data_rows):
+            if data.labeled:
+                labeled_data = data.labeled
+                for freq_segment, gamma_segment, label in labeled_data:
+                    all_labeled_data.append({
+                        'row': row,
+                        'frequency': freq_segment,
+                        'gamma': gamma_segment,
+                        'label': [label] * len(freq_segment)
+                    })
+
+        if not all_labeled_data:
+            self.statusbar.showMessage("Нет размеченных данных для сохранения", 5000)
+            return
+
+        # Создаем единый DataFrame
+        combined_data = []
+        for item in all_labeled_data:
+            for freq, gamma, label in zip(item['frequency'], item['gamma'], item['label']):
+                combined_data.append({
+                    'row': item['row'],
+                    'frequency': freq,
+                    'gamma': gamma,
+                    'label': label
+                })
+
+        df = pd.DataFrame(combined_data)
+
+        # Сохраняем с уникальным именем, используя временную метку
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = os.path.join(self.project_dir, f"all_labeled_data_{timestamp}.csv")
+        df.to_csv(output_file, index=False)
+
+        self.statusbar.showMessage(f"Общий результат сохранен в {output_file}", 5000)
 
     def handle_cell_click(self, row, column):
         if column == 4 and self.data_rows[row].labeled:
@@ -262,19 +345,17 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
             self.start_animation()
 
     def start_animation(self):
-        self.animation_timer.start(800)  # 0.8 секунды
+        self.animation_timer.start(800)
 
     def stop_animation(self):
         self.animation_timer.stop()
-        self.current_animation_row = None  # Восстанавливаем стандартный график
+        self.current_animation_row = None
 
     def next_animation_frame(self):
         if self.current_animation_row is None:
             return
-
         data = self.data_rows[self.current_animation_row]
         labeled_data = data.labeled
-
         if not labeled_data or self.current_frame >= len(labeled_data):
             self.stop_animation()
             return
@@ -289,3 +370,103 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                               name=f"Интервал {'с точкой' if is_positive else 'без точки'}")
 
         self.current_frame += 1
+
+    def save_state(self):
+        state = {
+            'window_width': self.window_width,
+            'table': []
+        }
+        for row in range(self.tableWidget.rowCount()):
+            row_data = {
+                'with_substance': None,
+                'without_substance': None,
+                'result': None,
+                'labeled': None
+            }
+            for col in range(1, 5):
+                item = self.tableWidget.item(row, col)
+                if item:
+                    file_name = item.text()
+                    if file_name:
+                        if col == 1:
+                            row_data['with_substance'] = file_name
+                        elif col == 2:
+                            row_data['without_substance'] = file_name
+                        elif col == 3:
+                            row_data['result'] = file_name
+                        elif col == 4:
+                            row_data['labeled'] = file_name
+            state['table'].append(row_data)
+
+        try:
+            with open(self.state_file, 'w', encoding='utf-8') as f:
+                json.dump(state, f)
+        except Exception as e:
+            self.statusbar.showMessage(f"Ошибка сохранения состояния: {str(e)}", 5000)
+
+    def load_state(self):
+        try:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+
+                self.window_width = state.get('window_width', 10)
+                self.width_input.setText(str(self.window_width))
+
+                if state.get('table'):
+                    self.tableWidget.setRowCount(0)
+                    self.data_rows = []
+                    for row_data in state['table']:
+                        row = self.tableWidget.rowCount()
+                        self.tableWidget.insertRow(row)
+                        self.data_rows.append(DataRow(None, None, None, None))
+                        self.setup_row(row)
+
+                        for col, key in [(1, 'with_substance'), (2, 'without_substance'),
+                                         (3, 'result'), (4, 'labeled')]:
+                            if row_data.get(key):
+                                file_path = os.path.join(self.project_dir, row_data[key])
+                                if os.path.exists(file_path):
+                                    item = QTableWidgetItem(row_data[key])
+                                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                                    self.tableWidget.setItem(row, col, item)
+                                    if col <= 3:
+                                        try:
+                                            with open(file_path, 'r', encoding='utf-8') as f:
+                                                lines = f.readlines()
+                                            if col == 1:
+                                                freq, gamma = self.parser_all_data(lines)
+                                                self.data_rows[row] = self.data_rows[row]._replace(
+                                                    with_substance=(freq, gamma))
+                                            elif col == 2:
+                                                freq, gamma = self.parser_all_data(lines)
+                                                self.data_rows[row] = self.data_rows[row]._replace(
+                                                    without_substance=(freq, gamma))
+                                            elif col == 3:
+                                                result = self.parser_result_data(lines)
+                                                if result:
+                                                    self.data_rows[row] = self.data_rows[row]._replace(result=result)
+                                        except Exception as e:
+                                            self.statusbar.showMessage(
+                                                f"Ошибка загрузки файла {row_data[key]}: {str(e)}", 5000)
+                                    elif col == 4:
+                                        try:
+                                            labeled_data = []
+                                            df = pd.read_csv(file_path)
+                                            window_size = len(df) // (len(df['label'].unique()) * 2)
+                                            for i in range(0, len(df), window_size):
+                                                freq_segment = df['frequency'][i:i + window_size].tolist()
+                                                gamma_segment = df['gamma'][i:i + window_size].tolist()
+                                                label = df['label'][i] == True
+                                                labeled_data.append((freq_segment, gamma_segment, label))
+                                            self.data_rows[row] = self.data_rows[row]._replace(labeled=labeled_data)
+                                        except Exception as e:
+                                            self.statusbar.showMessage(f"Ошибка загрузки размеченных данных: {str(e)}",
+                                                                       5000)
+        except Exception as e:
+            self.statusbar.showMessage(f"Ошибка загрузки состояния: {str(e)}", 5000)
+
+        if self.tableWidget.rowCount() == 0:
+            self.tableWidget.setRowCount(1)
+            self.data_rows.append(DataRow(None, None, None, None))
+            self.setup_row(0)

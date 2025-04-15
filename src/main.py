@@ -4,6 +4,7 @@ from functools import partial
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 from gui_logic import GuiProgram
+from src.plot_widget import DataPlotWidget
 from src.app_exception import AppException
 
 
