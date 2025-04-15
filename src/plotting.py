@@ -1,5 +1,6 @@
 import pyqtgraph as pg
 import pandas as pd
+import numpy as np
 import logging
 from PySide6.QtCore import QTimer, Qt
 import os
@@ -71,17 +72,27 @@ class Plotter:
             self.stop_animation()
             return
         data = self.parent.data_rows[self.current_animation_row]
-        if not data.labeled_file or not os.path.exists(data.labeled_file):
-            logging.error(f"Файл размеченных данных не найден: {data.labeled_file}")
-            self.parent.statusbar.showMessage("Файл размеченных данных не найден", 5000)
+        if data.interval_starts is None:
+            logging.error(f"Размеченные данные не найдены для строки {self.current_animation_row}")
+            self.parent.statusbar.showMessage("Размеченные данные не найдены", 5000)
             self.stop_animation()
             return
 
         try:
-            df = pd.read_csv(data.labeled_file)
-            window_size = len(df) // (len(df['label'].unique()) * 2)
-            segments = [df[i:i + window_size] for i in range(0, len(df), window_size)]
-            if not segments or self.current_frame >= len(segments):
+            row_dir = os.path.join(self.parent.project_dir, f"row_{self.current_animation_row}")
+            positive_file = os.path.join(row_dir, "positive.npy")
+            negative_file = os.path.join(row_dir, "negative.npy")
+            if not (os.path.exists(positive_file) and os.path.exists(negative_file)):
+                logging.error(f"Файлы .npy не найдены в {row_dir}")
+                self.parent.statusbar.showMessage("Файлы размеченных данных не найдены", 5000)
+                self.stop_animation()
+                return
+
+            positive = np.load(positive_file)
+            negative = np.load(negative_file)
+            interval_starts = data.interval_starts
+
+            if self.current_frame >= len(interval_starts):
                 self.stop_animation()
                 self.parent.statusbar.showMessage("Анимация завершена", 5000)
                 return
@@ -90,16 +101,40 @@ class Plotter:
             self.plot_widget.setLabel('left', 'Gamma')
             self.plot_widget.setLabel('bottom', 'Frequency')
 
-            segment = segments[self.current_frame]
-            is_positive = segment['label'].iloc[0]
+            start_idx, is_positive = interval_starts[self.current_frame]
+            df_with = pd.read_csv(data.with_substance_file)
+            freq_segment = df_with['frequency'][start_idx:start_idx + self.parent.window_width].to_numpy()
+
+            if is_positive:
+                if self.current_frame < len(positive):
+                    gamma_segment = positive[self.current_frame]
+                else:
+                    logging.warning(f"Недостаточно данных в positive.npy для кадра {self.current_frame}")
+                    self.current_frame += 1
+                    return
+            else:
+                negative_idx = self.current_frame - len(positive)
+                if negative_idx < len(negative):
+                    gamma_segment = negative[negative_idx]
+                else:
+                    logging.warning(f"Недостаточно данных в negative.npy для кадра {self.current_frame}")
+                    self.current_frame += 1
+                    return
+
+            if len(freq_segment) != self.parent.window_width or len(gamma_segment) != self.parent.window_width:
+                logging.warning(
+                    f"Некорректный сегмент анимации: {len(freq_segment)} частот, {len(gamma_segment)} gamma")
+                self.current_frame += 1
+                return
+
             pen = 'g' if is_positive else 'y'
-            self.plot_widget.plot(segment['frequency'], segment['gamma'], pen=pen,
+            self.plot_widget.plot(freq_segment, gamma_segment, pen=pen,
                                   name=f"Интервал {'с точкой' if is_positive else 'без точки'}")
 
             self.current_frame += 1
             logging.info(f"Отображен кадр анимации {self.current_frame} для строки {self.current_animation_row}")
         except Exception as e:
-            logging.error(f"Ошибка анимации данных {data.labeled_file}: {str(e)}")
+            logging.error(f"Ошибка анимации для строки {self.current_animation_row}: {str(e)}")
             self.parent.statusbar.showMessage(f"Ошибка анимации: {str(e)}", 5000)
             self.parent.remove_file(self.current_animation_row, 4)
             self.stop_animation()
@@ -107,19 +142,15 @@ class Plotter:
     def start_animation(self, row: int):
         """
         Запускает анимацию для указанной строки.
-
-        Parameters
-        ----------
-        row : int
-            Индекс строки таблицы.
         """
         self.current_animation_row = row
         self.current_frame = 0
-        self.animation_timer.start(800)
-        logging.info(f"Запущена анимация для строки {row}")
+        self.animation_timer.start(self.parent.animation_delay)
+        logging.info(f"Запущена анимация для строки {row} с задержкой {self.parent.animation_delay} мс")
 
     def stop_animation(self):
         """Останавливает анимацию."""
         self.animation_timer.stop()
         self.current_animation_row = None
+        self.current_frame = 0
         logging.info("Анимация остановлена")

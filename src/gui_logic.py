@@ -7,12 +7,14 @@ import pandas as pd
 import os
 import shutil
 import json
+import random
+import numpy as np
 from datetime import datetime
 from parsers import parser_all_data, parser_result_data
 from plotting import Plotter
 import logging
 
-DataRow = namedtuple('DataRow', ['with_substance_file', 'without_substance_file', 'result_file', 'labeled_file'])
+м = namedtuple('DataRow', ['with_substance_file', 'without_substance_file', 'result_file', 'interval_starts'])
 
 
 class GuiProgram(QMainWindow, Ui_MainWindow):
@@ -22,12 +24,17 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
         self.setupUi(self)
         self.data_rows: list = []
         self.window_width: int = 10
+        self.animation_delay: int = 800  # Задержка анимации по умолчанию, мс
         self.project_dir: str = "app_data"
         self.state_file: str = os.path.join(self.project_dir, "project_state.json")
         self.log_file: str = os.path.join(self.project_dir, "log.txt")
         os.makedirs(self.project_dir, exist_ok=True)
-        logging.basicConfig(filename=self.log_file, level=logging.INFO,
-                            format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.basicConfig(
+            filename=self.log_file,
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            encoding='utf-8'
+        )
         self.init_ui()
 
     def init_ui(self):
@@ -54,6 +61,12 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
         self.control_layout.addWidget(self.width_label)
         self.control_layout.addWidget(self.width_input)
 
+        self.delay_label = QLabel("Задержка анимации [мс]:")
+        self.delay_input = QLineEdit(str(self.animation_delay))
+        self.delay_input.textChanged.connect(self.update_animation_delay)
+        self.control_layout.addWidget(self.delay_label)
+        self.control_layout.addWidget(self.delay_input)
+
         self.mark_button = QPushButton("Разметить")
         self.mark_button.clicked.connect(self.mark_data)
         self.control_layout.addWidget(self.mark_button)
@@ -76,6 +89,19 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
 
         QApplication.instance().aboutToQuit.connect(self.save_state)
 
+    def update_animation_delay(self, text: str):
+        """Обновляет задержку анимации из поля ввода."""
+        try:
+            self.animation_delay = int(text)
+            self.statusbar.showMessage(f"Задержка анимации обновлена: {text} мс", 5000)
+            # Если анимация уже идет, перезапускаем с новой задержкой
+            if self.plotter.current_animation_row is not None:
+                row = self.plotter.current_animation_row
+                self.plotter.stop_animation()
+                self.plotter.start_animation(row)
+        except ValueError:
+            self.statusbar.showMessage("Задержка анимации должна быть целым числом", 5000)
+
     def setup_row(self, row: int):
         """Настраивает виджеты для строки таблицы."""
         delete_btn = QPushButton("Удалить")
@@ -92,20 +118,6 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
     def copy_file_to_project(self, file_name: str, row: int, data_type: str) -> str:
         """
         Копирует файл в директорию строки и сохраняет как DataFrame.
-
-        Parameters
-        ----------
-        file_name : str
-            Путь к исходному файлу.
-        row : int
-            Индекс строки таблицы.
-        data_type : str
-            Тип данных ('with_substance', 'without_substance', 'result').
-
-        Returns
-        -------
-        str or None
-            Путь к сохраненному файлу DataFrame или None при ошибке.
         """
         if not file_name:
             return None
@@ -133,13 +145,6 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
     def load_file(self, row: int, column: int):
         """
         Загружает и обрабатывает файл для ячейки таблицы.
-
-        Parameters
-        ----------
-        row : int
-            Индекс строки таблицы.
-        column : int
-            Индекс столбца таблицы (1-3 для типов данных).
         """
         file_name, _ = QFileDialog.getOpenFileName(
             self, "Выберите файл", "", "All Files (*)")
@@ -153,14 +158,14 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                     current_data = self.data_rows[row]
                     if column == 1:
                         new_data = DataRow(dest_file, current_data.without_substance_file,
-                                           current_data.result_file, current_data.labeled_file)
+                                           current_data.result_file, current_data.interval_starts)
                     elif column == 2:
                         new_data = DataRow(current_data.with_substance_file, dest_file,
-                                           current_data.result_file, current_data.labeled_file)
+                                           current_data.result_file, current_data.interval_starts)
                     elif column == 3:
                         new_data = DataRow(current_data.with_substance_file,
                                            current_data.without_substance_file, dest_file,
-                                           current_data.labeled_file)
+                                           current_data.interval_starts)
                     self.data_rows[row] = new_data
 
                     file_item = QTableWidgetItem(f"{data_type}.csv")
@@ -183,13 +188,6 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
     def remove_file(self, row: int, column: int):
         """
         Удаляет файл, связанный с ячейкой таблицы.
-
-        Parameters
-        ----------
-        row : int
-            Индекс строки таблицы.
-        column : int
-            Индекс столбца таблицы (1-4).
         """
         if column not in range(1, 5):
             return
@@ -198,7 +196,6 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
             1: current_data.with_substance_file,
             2: current_data.without_substance_file,
             3: current_data.result_file,
-            4: current_data.labeled_file
         }
         file_path = file_map.get(column)
         if file_path and os.path.exists(file_path):
@@ -209,15 +206,19 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                 logging.error(f"Ошибка удаления файла {file_path}: {str(e)}")
                 self.statusbar.showMessage(f"Ошибка удаления файла: {str(e)}", 5000)
 
-        # Удаляем labeled_file, если изменились данные в столбцах 1-3
-        if column in (1, 2, 3) and current_data.labeled_file and os.path.exists(current_data.labeled_file):
+        # Удаляем размеченные данные, если изменились данные в столбцах 1-3
+        if column in (1, 2, 3) and current_data.interval_starts is not None:
             try:
-                os.remove(current_data.labeled_file)
+                row_dir = os.path.join(self.project_dir, f"row_{row}")
+                for fname in ["positive.npy", "negative.npy"]:
+                    fpath = os.path.join(row_dir, fname)
+                    if os.path.exists(fpath):
+                        os.remove(fpath)
                 self.statusbar.showMessage(f"Размеченные данные удалены из-за изменения данных", 5000)
-                self.data_rows[row] = self.data_rows[row]._replace(labeled_file=None)
+                self.data_rows[row] = self.data_rows[row]._replace(interval_starts=None)
                 self.tableWidget.setItem(row, 4, QTableWidgetItem(""))
             except Exception as e:
-                logging.error(f"Ошибка удаления размеченных данных {current_data.labeled_file}: {str(e)}")
+                logging.error(f"Ошибка удаления размеченных данных: {str(e)}")
                 self.statusbar.showMessage(f"Ошибка удаления размеченных данных: {str(e)}", 5000)
 
         if column == 1:
@@ -227,15 +228,23 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
         elif column == 3:
             self.data_rows[row] = self.data_rows[row]._replace(result_file=None)
         elif column == 4:
-            self.data_rows[row] = self.data_rows[row]._replace(labeled_file=None)
+            self.data_rows[row] = self.data_rows[row]._replace(interval_starts=None)
+            row_dir = os.path.join(self.project_dir, f"row_{row}")
+            for fname in ["positive.npy", "negative.npy"]:
+                fpath = os.path.join(row_dir, fname)
+                if os.path.exists(fpath):
+                    try:
+                        os.remove(fpath)
+                    except Exception as e:
+                        logging.error(f"Ошибка удаления файла {fpath}: {str(e)}")
+                        self.statusbar.showMessage(f"Ошибка удаления файла: {str(e)}", 5000)
+            self.tableWidget.setItem(row, 4, QTableWidgetItem(""))
 
         self.tableWidget.removeCellWidget(row, column)
         if column < 4:
             load_btn = QPushButton("Загрузить")
             load_btn.clicked.connect(lambda ch, r=row, c=column: self.load_file(r, c))
             self.tableWidget.setCellWidget(row, column, load_btn)
-        else:
-            self.tableWidget.setItem(row, 4, QTableWidgetItem(""))
         self.plotter.plot_row_data()
 
     def add_row(self):
@@ -250,11 +259,6 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
     def delete_row(self, row: int):
         """
         Удаляет строку таблицы и связанную директорию.
-
-        Parameters
-        ----------
-        row : int
-            Индекс строки таблицы.
         """
         if self.tableWidget.rowCount() > 1:
             row_dir = os.path.join(self.project_dir, f"row_{row}")
@@ -279,7 +283,7 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                             os.path.join(new_dir,
                                          "without_substance.csv") if current_data.without_substance_file else None,
                             os.path.join(new_dir, "result.csv") if current_data.result_file else None,
-                            os.path.join(new_dir, "labeled.csv") if current_data.labeled_file else None
+                            current_data.interval_starts
                         )
                         self.data_rows[i] = new_data
                     except Exception as e:
@@ -338,73 +342,57 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                 self.statusbar.showMessage("Нет точек поглощения для разметки", 5000)
                 return
 
-            labeled_data = []
-            half_window = self.window_width // 2
-
-            # Интервалы с линией поглощения (True)
+            positive_intervals = []
+            negative_intervals = []
             used_indices = set()
+            half_window = self.window_width // 2
+            interval_starts = []
+
+            # Интервалы с линией поглощения (positive)
             for point_freq in result_freq:
                 idx = min(range(len(freq_with)), key=lambda i: abs(freq_with[i] - point_freq))
                 start = idx - half_window
                 end = idx + half_window
-                # Пропускаем, если интервал выходит за границы или не равен window_width
                 if start < 0 or end > len(freq_with) or (end - start) != self.window_width:
                     continue
-                freq_segment = freq_with[start:end].tolist()
                 gamma_segment = gamma_with[start:end].tolist()
-                labeled_data.append((freq_segment, gamma_segment, True))
+                positive_intervals.append(gamma_segment)
+                interval_starts.append((start, True))
                 used_indices.update(range(start, end))
 
-            # Интервалы без линии поглощения (False)
-            unmarked_count = len(labeled_data)
-            i = 0
-            while len(labeled_data) < unmarked_count * 2 and i < len(freq_with):
+            # Интервалы без линии поглощения (negative)
+            n_positive = len(positive_intervals)
+            available_indices = [i for i in range(half_window, len(freq_with) - half_window)
+                                 if not any(i - half_window <= idx < i + half_window for idx in used_indices)]
+            random.shuffle(available_indices)
+
+            for i in available_indices[:n_positive]:
                 start = i - half_window
                 end = i + half_window
-                if start >= 0 and end <= len(freq_with) and (end - start) == self.window_width:
-                    if not any(start <= idx < end for idx in used_indices):
-                        freq_segment = freq_with[start:end].tolist()
-                        gamma_segment = gamma_with[start:end].tolist()
-                        labeled_data.append((freq_segment, gamma_segment, False))
-                        used_indices.update(range(start, end))
-                i += 1
+                gamma_segment = gamma_with[start:end].tolist()
+                negative_intervals.append(gamma_segment)
+                interval_starts.append((start, False))
 
-            if not labeled_data:
+            if not positive_intervals or not negative_intervals:
                 self.statusbar.showMessage("Не удалось создать интервалы для разметки", 5000)
                 return
 
-            # Формируем DataFrame с явными группами
-            frequencies = []
-            gammas = []
-            labels = []
-            for freq_segment, gamma_segment, label in labeled_data:
-                if len(freq_segment) != self.window_width or len(gamma_segment) != self.window_width:
-                    logging.warning(f"Пропущен интервал с неверной длиной: {len(freq_segment)}")
-                    continue
-                frequencies.extend(freq_segment)
-                gammas.extend(gamma_segment)
-                labels.extend([label] * self.window_width)
+            # Сохранение в .npy
+            row_dir = os.path.join(self.project_dir, f"row_{row}")
+            os.makedirs(row_dir, exist_ok=True)
+            np.save(os.path.join(row_dir, "positive.npy"), np.array(positive_intervals))
+            np.save(os.path.join(row_dir, "negative.npy"), np.array(negative_intervals))
 
-            if not frequencies:
-                self.statusbar.showMessage("Не удалось сформировать данные для разметки", 5000)
-                return
-
-            df = pd.DataFrame({
-                'frequency': frequencies,
-                'gamma': gammas,
-                'label': labels
-            })
-
-            output_file = os.path.join(self.project_dir, f"row_{row}", "labeled.csv")
-            df.to_csv(output_file, index=False)
+            # Сортируем interval_starts для последовательной анимации
+            interval_starts.sort()
 
             self.data_rows[row] = DataRow(data.with_substance_file, data.without_substance_file,
-                                          data.result_file, output_file)
-            self.tableWidget.setItem(row, 4, QTableWidgetItem("labeled.csv"))
+                                          data.result_file, interval_starts)
+            self.tableWidget.setItem(row, 4, QTableWidgetItem("Размечено"))
 
             logging.info(
-                f"Разметка завершена: {len(labeled_data) // 2} интервалов True, {len(labeled_data) // 2} интервалов False")
-            self.statusbar.showMessage(f"Разметка завершена, сохранено в {output_file}", 5000)
+                f"Разметка завершена: {len(positive_intervals)} интервалов positive, {len(negative_intervals)} интервалов negative")
+            self.statusbar.showMessage(f"Разметка завершена, сохранено в {row_dir}", 5000)
         except Exception as e:
             logging.error(f"Ошибка разметки для строки {row}: {str(e)}")
             self.statusbar.showMessage(f"Ошибка разметки: {str(e)}", 5000)
@@ -414,23 +402,34 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
         self.statusbar.showMessage("Сохранение общего результата...", 5000)
 
         try:
-            all_labeled_data = []
+            all_data = []
             for row, data in enumerate(self.data_rows):
-                if data.labeled_file and os.path.exists(data.labeled_file):
-                    try:
-                        df = pd.read_csv(data.labeled_file)
-                        df['row'] = row
-                        all_labeled_data.append(df)
-                    except Exception as e:
-                        logging.error(f"Ошибка чтения размеченных данных {data.labeled_file}: {str(e)}")
-                        self.statusbar.showMessage(f"Ошибка чтения данных строки {row}: {str(e)}", 5000)
-                        self.remove_file(row, 4)
+                if data.interval_starts:
+                    row_dir = os.path.join(self.project_dir, f"row_{row}")
+                    positive_file = os.path.join(row_dir, "positive.npy")
+                    negative_file = os.path.join(row_dir, "negative.npy")
+                    if os.path.exists(positive_file) and os.path.exists(negative_file):
+                        try:
+                            positive = np.load(positive_file)
+                            negative = np.load(negative_file)
+                            positive_df = pd.DataFrame(positive,
+                                                       columns=[f"gamma_{i}" for i in range(positive.shape[1])])
+                            negative_df = pd.DataFrame(negative,
+                                                       columns=[f"gamma_{i}" for i in range(negative.shape[1])])
+                            positive_df['label'] = True
+                            negative_df['label'] = False
+                            positive_df['row'] = row
+                            negative_df['row'] = row
+                            all_data.extend([positive_df, negative_df])
+                        except Exception as e:
+                            logging.error(f"Ошибка чтения данных строки {row}: {str(e)}")
+                            self.statusbar.showMessage(f"Ошибка чтения данных строки {row}: {str(e)}", 5000)
 
-            if not all_labeled_data:
+            if not all_data:
                 self.statusbar.showMessage("Нет размеченных данных для сохранения", 5000)
                 return
 
-            combined_df = pd.concat(all_labeled_data, ignore_index=True)
+            combined_df = pd.concat(all_data, ignore_index=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_file = os.path.join(self.project_dir, f"all_labeled_data_{timestamp}.csv")
             combined_df.to_csv(output_file, index=False)
@@ -443,19 +442,17 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
     def handle_cell_click(self, row: int, column: int):
         """
         Обрабатывает клики по ячейкам, включая анимацию для размеченных данных.
-
-        Parameters
-        ----------
-        row : int
-            Индекс строки таблицы.
-        column : int
-            Индекс столбца таблицы.
         """
         logging.info(f"Клик по ячейке: строка {row}, столбец {column}")
-        if column == 4 and self.data_rows[row].labeled_file and os.path.exists(self.data_rows[row].labeled_file):
-            logging.info(f"Запуск анимации для строки {row}")
-            self.plotter.start_animation(row)
-            self.statusbar.showMessage("Запущена анимация размеченных данных", 5000)
+        if column == 4 and self.data_rows[row].interval_starts is not None:
+            if self.plotter.current_animation_row == row:
+                logging.info(f"Остановка анимации для строки {row}")
+                self.plotter.stop_animation()
+                self.statusbar.showMessage("Анимация остановлена", 5000)
+            else:
+                logging.info(f"Запуск анимации для строки {row}")
+                self.plotter.start_animation(row)
+                self.statusbar.showMessage("Запущена анимация размеченных данных", 5000)
         elif column in (1, 2, 3) and self.tableWidget.item(row, column):
             self.remove_file(row, column)
 
@@ -463,6 +460,7 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
         """Сохраняет состояние таблицы, ширину окна и выбранную строку в JSON-файл."""
         state = {
             'window_width': self.window_width,
+            'animation_delay': self.animation_delay,
             'selected_row': None,
             'table': []
         }
@@ -477,11 +475,12 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                 'result': None,
                 'labeled': None
             }
-            for col, key in [(1, 'with_substance'), (2, 'without_substance'),
-                             (3, 'result'), (4, 'labeled')]:
+            for col, key in [(1, 'with_substance'), (2, 'without_substance'), (3, 'result')]:
                 if self.data_rows[row]._asdict().get(f"{key}_file") and \
                         os.path.exists(self.data_rows[row]._asdict()[f"{key}_file"]):
                     row_data[key] = f"{key}.csv"
+            if self.data_rows[row].interval_starts is not None:
+                row_data['labeled'] = "Размечено"
             state['table'].append(row_data)
 
         try:
@@ -500,8 +499,10 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                     state = json.load(f)
 
                 self.window_width = state.get('window_width', 10)
+                self.animation_delay = state.get('animation_delay', 800)
                 self.width_input.setText(str(self.window_width))
-                logging.info(f"Загружена ширина окна: {self.window_width}")
+                self.delay_input.setText(str(self.animation_delay))
+                logging.info(f"Загружена ширина окна: {self.window_width}, задержка анимации: {self.animation_delay}")
 
                 self.tableWidget.setRowCount(0)
                 self.data_rows = []
@@ -515,33 +516,42 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                     self.data_rows.append(new_row)
                     self.setup_row(row)
 
-                    for col, key in [(1, 'with_substance'), (2, 'without_substance'),
-                                     (3, 'result'), (4, 'labeled')]:
+                    for col, key in [(1, 'with_substance'), (2, 'without_substance'), (3, 'result')]:
                         if row_data.get(key):
                             file_name = row_data[key]
                             file_path = os.path.join(row_dir, file_name)
                             logging.info(f"Проверка файла: {file_path}")
                             if os.path.exists(file_path):
-                                if col < 4:
-                                    item = QTableWidgetItem(file_name)
-                                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                                    self.tableWidget.setItem(row, col, item)
-                                    self.tableWidget.removeCellWidget(row, col)
-                                else:
-                                    item = QTableWidgetItem(file_name)
-                                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                                    self.tableWidget.setItem(row, col, item)
+                                item = QTableWidgetItem(file_name)
+                                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                                self.tableWidget.setItem(row, col, item)
+                                self.tableWidget.removeCellWidget(row, col)
                                 if col == 1:
                                     self.data_rows[row] = self.data_rows[row]._replace(with_substance_file=file_path)
                                 elif col == 2:
                                     self.data_rows[row] = self.data_rows[row]._replace(without_substance_file=file_path)
                                 elif col == 3:
                                     self.data_rows[row] = self.data_rows[row]._replace(result_file=file_path)
-                                elif col == 4:
-                                    self.data_rows[row] = self.data_rows[row]._replace(labeled_file=file_path)
                             else:
                                 logging.error(f"Файл не найден: {file_path}")
                                 self.statusbar.showMessage(f"Файл {file_name} не найден", 5000)
+
+                    if row_data.get('labeled'):
+                        positive_file = os.path.join(row_dir, "positive.npy")
+                        negative_file = os.path.join(row_dir, "negative.npy")
+                        if os.path.exists(positive_file) and os.path.exists(negative_file):
+                            item = QTableWidgetItem("Размечено")
+                            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                            self.tableWidget.setItem(row, 4, item)
+                            try:
+                                positive = np.load(positive_file)
+                                negative = np.load(negative_file)
+                                interval_starts = [(0, True)] * len(positive) + [(0, False)] * len(negative)
+                                interval_starts.sort(key=lambda x: x[0])
+                                self.data_rows[row] = self.data_rows[row]._replace(interval_starts=interval_starts)
+                            except Exception as e:
+                                logging.error(f"Ошибка загрузки размеченных данных строки {row}: {str(e)}")
+                                self.statusbar.showMessage(f"Ошибка загрузки данных строки {row}: {str(e)}", 5000)
 
                 if self.tableWidget.rowCount() > 0:
                     selected_row = state.get('selected_row', 0)
