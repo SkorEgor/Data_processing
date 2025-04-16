@@ -32,10 +32,10 @@ class Ui_MainWindow(object):
         self.verticalLayout.setContentsMargins(0, 0, 0, 0)
         self.widget_plot = QWidget(self.widget_main)
         self.widget_plot.setObjectName(u"widget_plot")
-        self.verticalLayout_2 = QVBoxLayout(self.widget_plot)
-        self.verticalLayout_2.setSpacing(0)
-        self.verticalLayout_2.setObjectName(u"verticalLayout_2")
-        self.verticalLayout_2.setContentsMargins(0, 0, 0, 0)
+        self.layout_plot_1 = QVBoxLayout(self.widget_plot)
+        self.layout_plot_1.setSpacing(0)
+        self.layout_plot_1.setObjectName(u"layout_plot_1")
+        self.layout_plot_1.setContentsMargins(0, 0, 0, 0)
 
         self.verticalLayout.addWidget(self.widget_plot)
 

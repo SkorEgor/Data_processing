@@ -32,7 +32,7 @@
     </property>
     <item>
      <widget class="QWidget" name="widget_plot" native="true">
-      <layout class="QVBoxLayout" name="verticalLayout_2">
+      <layout class="QVBoxLayout" name="layout_plot_1">
        <property name="spacing">
         <number>0</number>
        </property>

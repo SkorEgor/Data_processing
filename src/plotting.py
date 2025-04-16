@@ -1,156 +1,266 @@
-import pyqtgraph as pg
-import pandas as pd
-import numpy as np
+import sys
 import logging
-from PySide6.QtCore import QTimer, Qt
-import os
+import pyqtgraph as pg
+from pandas import DataFrame
+from numpy.random import randn
+from numpy import ndarray, linspace, sin
+from PySide6.QtGui import QColor, QPixmap, Qt
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget, QApplication
+
+from src.data import DataRow
 
 
-class Plotter:
-    def __init__(self, parent_widget, parent):
-        """Инициализирует объект для построения графиков и анимации."""
-        self.parent = parent
-        self.plot_widget: pg.PlotWidget = pg.PlotWidget()
-        parent_widget.layout().addWidget(self.plot_widget)
-        self.animation_timer: QTimer = QTimer()
-        self.current_animation_row: int = None
-        self.current_frame: int = 0
-        self.animation_timer.timeout.connect(self.animate_labeled_data)
+def clearer_layout(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget:
+            widget.deleteLater()
+        elif item.layout():
+            clearer_layout(item.layout())
 
-    def plot_row_data(self):
-        """Строит график данных из выбранной строки таблицы."""
-        self.stop_animation()
-        self.plot_widget.clear()
-        selected = self.parent.tableWidget.selectedItems()
-        if not selected:
-            return
-        row = selected[0].row()
-        data = self.parent.data_rows[row]
 
-        self.plot_widget.setLabel('left', 'Gamma')
-        self.plot_widget.setLabel('bottom', 'Frequency')
-        self.plot_widget.addLegend()
+class SpectrometerPlotWidget(pg.PlotWidget):
+    title_data = "Данные с веществом и без вещества"
+    horizontal_axis_name_data = "Частота [МГц]"
+    vertical_axis_name_data = "Гамма [усл.ед.]"
+    name_without_gas = "Без вещества"
+    color_without_gas = "#515151"
+    name_with_gas = "С веществом"
+    color_with_gas = "#DC7C02"
+    absorption_line_text_true = "Точки поглощения (от нейронной сети)"
+    absorption_line_color_true = "#36F62D"  # Зеленый
+    absorption_line_text_false = "Точки поглощения (проставленные вручную)"
+    absorption_line_color_false = "#0000FF"  # Синий
+    labeled_positive_text = "Размеченные интервалы (с точкой)"
+    labeled_positive_color = "#36F62D"  # Зеленый
+    labeled_negative_text = "Размеченные интервалы (без точки)"
+    labeled_negative_color = "#FFA500"  # Желтый
 
-        self.parent.statusbar.showMessage("Чтение данных...", 5000)
+    def __init__(self, parent=None):
+        pg.setConfigOptions(background="w", foreground="k")
+        super().__init__(parent=parent)
+        self.showGrid(x=True, y=True)
+        self.setLabel("left", self.vertical_axis_name_data)
+        self.setLabel("bottom", self.horizontal_axis_name_data)
+        self.setTitle(self.title_data)
+        self.setMinimumSize(400, 300)
+        self.enableAutoRange(x=True, y=True)
 
-        try:
-            if data.with_substance_file and os.path.exists(data.with_substance_file):
-                try:
-                    df = pd.read_csv(data.with_substance_file)
-                    self.plot_widget.plot(df['frequency'], df['gamma'], pen='r', name='С веществом')
-                except Exception as e:
-                    logging.error(f"Ошибка чтения {data.with_substance_file}: {str(e)}")
-                    self.parent.statusbar.showMessage(f"Ошибка чтения данных с веществом: {str(e)}", 5000)
-                    self.parent.remove_file(row, 1)
+    def plot_row(self, data_row: DataRow):
+        """Отрисовывает данные из DataRow и возвращает данные для легенды."""
+        self.clear()
+        legend_data = []
+        logging.info(f"Отрисовка данных для строки")
 
-            if data.without_substance_file and os.path.exists(data.without_substance_file):
-                try:
-                    df = pd.read_csv(data.without_substance_file)
-                    self.plot_widget.plot(df['frequency'], df['gamma'], pen='b', name='Без вещества')
-                except Exception as e:
-                    logging.error(f"Ошибка чтения {data.without_substance_file}: {str(e)}")
-                    self.parent.statusbar.showMessage(f"Ошибка чтения данных без вещества: {str(e)}", 5000)
-                    self.parent.remove_file(row, 2)
+        has_data = any([
+            isinstance(data_row.with_substance, DataFrame) and not data_row.with_substance.empty,
+            isinstance(data_row.without_substance, DataFrame) and not data_row.without_substance.empty,
+            isinstance(data_row.result, DataFrame) and not data_row.result.empty,
+            data_row.intervals_positive is not None,
+            data_row.intervals_negative is not None
+        ])
+        # Нет данных
+        if not has_data:
+            logging.info("Нет данных для отрисовки")
+            return legend_data
+        # Отрисовка данных без вещества
+        if (
+                isinstance(data_row.without_substance, DataFrame)
+                and not data_row.without_substance.empty
+                and not data_row.without_substance[["frequency", "gamma"]].dropna().empty
+        ):
+            self.plot(
+                data_row.without_substance["frequency"],
+                data_row.without_substance["gamma"],
+                pen=pg.mkPen(color=self.color_without_gas, width=2),
+                name=self.name_without_gas,
+            )
+            legend_data.append((self.color_without_gas, self.name_without_gas))
+        # Отрисовка данных с веществом
+        if (
+                isinstance(data_row.with_substance, DataFrame)
+                and not data_row.with_substance.empty
+                and not data_row.with_substance[["frequency", "gamma"]].dropna().empty
+        ):
+            self.plot(
+                data_row.with_substance["frequency"],
+                data_row.with_substance["gamma"],
+                pen=pg.mkPen(color=self.color_with_gas, width=2),
+                name=self.name_with_gas,
+            )
+            legend_data.append((self.color_with_gas, self.name_with_gas))
 
-            if data.result_file and os.path.exists(data.result_file):
-                try:
-                    df = pd.read_csv(data.result_file)
-                    self.plot_widget.plot(df['frequency'], df['gamma'], pen=None, symbol='o',
-                                          symbolPen='g', symbolBrush='g', name='Точки поглощения')
-                except Exception as e:
-                    logging.error(f"Ошибка чтения {data.result_file}: {str(e)}")
-                    self.parent.statusbar.showMessage(f"Ошибка чтения результата: {str(e)}", 5000)
-                    self.parent.remove_file(row, 3)
-            self.parent.statusbar.showMessage("График обновлен", 5000)
-        except Exception as e:
-            logging.error(f"Ошибка построения графика: {str(e)}")
-            self.parent.statusbar.showMessage(f"Ошибка построения графика: {str(e)}", 5000)
+        if (
+                isinstance(data_row.result, DataFrame)
+                and not data_row.result.empty
+                and not data_row.result[["frequency", "gamma"]].dropna().empty
+        ):
+            if "src" in data_row.result.columns:
+                df_true = data_row.result[data_row.result["src"] == True]
+                if not df_true.empty:
+                    scatter_true = pg.ScatterPlotItem(
+                        x=df_true["frequency"],
+                        y=df_true["gamma"],
+                        symbol="o",
+                        pen=pg.mkPen("k"),
+                        brush=self.absorption_line_color_true,
+                        size=8,
+                    )
+                    self.addItem(scatter_true)
+                    legend_data.append((self.absorption_line_color_true, self.absorption_line_text_true))
+                    logging.info(f"Отрисованы точки src=True: {len(df_true)} точек")
 
-    def animate_labeled_data(self):
-        """Отображает следующий кадр анимации размеченных данных."""
-        if self.current_animation_row is None:
-            self.stop_animation()
-            return
-        data = self.parent.data_rows[self.current_animation_row]
-        if data.interval_starts is None:
-            logging.error(f"Размеченные данные не найдены для строки {self.current_animation_row}")
-            self.parent.statusbar.showMessage("Размеченные данные не найдены", 5000)
-            self.stop_animation()
-            return
-
-        try:
-            row_dir = os.path.join(self.parent.project_dir, f"row_{self.current_animation_row}")
-            positive_file = os.path.join(row_dir, "positive.npy")
-            negative_file = os.path.join(row_dir, "negative.npy")
-            if not (os.path.exists(positive_file) and os.path.exists(negative_file)):
-                logging.error(f"Файлы .npy не найдены в {row_dir}")
-                self.parent.statusbar.showMessage("Файлы размеченных данных не найдены", 5000)
-                self.stop_animation()
-                return
-
-            positive = np.load(positive_file)
-            negative = np.load(negative_file)
-            interval_starts = data.interval_starts
-
-            if self.current_frame >= len(interval_starts):
-                self.stop_animation()
-                self.parent.statusbar.showMessage("Анимация завершена", 5000)
-                return
-
-            self.plot_widget.clear()
-            self.plot_widget.setLabel('left', 'Gamma')
-            self.plot_widget.setLabel('bottom', 'Frequency')
-
-            start_idx, is_positive = interval_starts[self.current_frame]
-            df_with = pd.read_csv(data.with_substance_file)
-            freq_segment = df_with['frequency'][start_idx:start_idx + self.parent.window_width].to_numpy()
-
-            if is_positive:
-                if self.current_frame < len(positive):
-                    gamma_segment = positive[self.current_frame]
-                else:
-                    logging.warning(f"Недостаточно данных в positive.npy для кадра {self.current_frame}")
-                    self.current_frame += 1
-                    return
+                df_false = data_row.result[data_row.result["src"] == False]
+                if not df_false.empty:
+                    scatter_false = pg.ScatterPlotItem(
+                        x=df_false["frequency"],
+                        y=df_false["gamma"],
+                        symbol="o",
+                        pen=pg.mkPen("k"),
+                        brush=self.absorption_line_color_false,
+                        size=8,
+                    )
+                    self.addItem(scatter_false)
+                    legend_data.append((self.absorption_line_color_false, self.absorption_line_text_false))
+                    logging.info(f"Отрисованы точки: {len(df_false)} точек")
             else:
-                negative_idx = self.current_frame - len(positive)
-                if negative_idx < len(negative):
-                    gamma_segment = negative[negative_idx]
-                else:
-                    logging.warning(f"Недостаточно данных в negative.npy для кадра {self.current_frame}")
-                    self.current_frame += 1
-                    return
+                logging.warning(f"Колонка 'src' отсутствует в data_row.result")
+                scatter = pg.ScatterPlotItem(
+                    x=data_row.result["frequency"],
+                    y=data_row.result["gamma"],
+                    symbol="o",
+                    pen=pg.mkPen("k"),
+                    brush=self.absorption_line_color_true,
+                    size=8,
+                )
+                self.addItem(scatter)
+                legend_data.append((self.absorption_line_color_true, self.absorption_line_text_true))
+                logging.info(f"Отрисованы точки поглощения")
 
-            if len(freq_segment) != self.parent.window_width or len(gamma_segment) != self.parent.window_width:
-                logging.warning(
-                    f"Некорректный сегмент анимации: {len(freq_segment)} частот, {len(gamma_segment)} gamma")
-                self.current_frame += 1
-                return
+        return legend_data
 
-            pen = 'g' if is_positive else 'y'
-            self.plot_widget.plot(freq_segment, gamma_segment, pen=pen,
-                                  name=f"Интервал {'с точкой' if is_positive else 'без точки'}")
+    def plot_positive_interval(self, gamma_segment: ndarray):
+        """Отрисовывает положительный интервал (с линией поглощения)."""
+        self.clear()
+        legend_data = []
+        logging.info(f"Отрисовка линии поглощения")
 
-            self.current_frame += 1
-            logging.info(f"Отображен кадр анимации {self.current_frame} для строки {self.current_animation_row}")
-        except Exception as e:
-            logging.error(f"Ошибка анимации для строки {self.current_animation_row}: {str(e)}")
-            self.parent.statusbar.showMessage(f"Ошибка анимации: {str(e)}", 5000)
-            self.parent.remove_file(self.current_animation_row, 4)
-            self.stop_animation()
+        self.plot(
+            y=gamma_segment,
+            pen=pg.mkPen(color=self.labeled_positive_color, width=2),
+            name=self.labeled_positive_text,
+        )
+        legend_data.append((self.labeled_positive_color, self.labeled_positive_text))
+        self.enableAutoRange(x=True, y=True)
+        logging.info(f"Успешно отрисована линия поглощения")
 
-    def start_animation(self, row: int):
-        """
-        Запускает анимацию для указанной строки.
-        """
-        self.current_animation_row = row
-        self.current_frame = 0
-        self.animation_timer.start(self.parent.animation_delay)
-        logging.info(f"Запущена анимация для строки {row} с задержкой {self.parent.animation_delay} мс")
+    def plot_negative(self, gamma_segment: ndarray):
+        """Отрисовывает отрицательный интервал (без линии поглощения)."""
+        self.clear()
+        legend_data = []
+        logging.info(f"Отрисовка без линии поглощения")
 
-    def stop_animation(self):
-        """Останавливает анимацию."""
-        self.animation_timer.stop()
-        self.current_animation_row = None
-        self.current_frame = 0
-        logging.info("Анимация остановлена")
+        self.plot(
+            y=gamma_segment,
+            pen=pg.mkPen(color=self.labeled_negative_color, width=2),
+            name=self.labeled_negative_text,
+        )
+        legend_data.append((self.labeled_negative_color, self.labeled_negative_text))
+        self.enableAutoRange(x=True, y=True)
+        logging.info(f"Успешно отрисован интервал без поглощения")
+
+
+class LegendWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.layout)
+
+    def update_legend(self, legend_items):
+        clearer_layout(self.layout)
+        for color, label in legend_items:
+            item_layout = QHBoxLayout()
+            item_layout.setSpacing(2)
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            # QPixmap для цвета
+            color_label = QLabel()
+            pixmap = QPixmap(20, 20)
+            pixmap.fill(QColor(color))
+            color_label.setPixmap(pixmap)
+            color_label.setFixedSize(20, 20)
+            item_layout.addWidget(color_label)
+            # Текстовая метка, выровненная по левому краю
+            text_label = QLabel(label)
+            text_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            item_layout.addWidget(text_label)
+            # Растяжение, чтобы сохранить общее распределение
+            item_layout.addStretch()
+            self.layout.addLayout(item_layout)
+
+
+class Plotter(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        self.plot_widget = SpectrometerPlotWidget()
+        layout.addWidget(self.plot_widget, stretch=1)
+
+        self.legend_widget = LegendWidget()
+        layout.addWidget(self.legend_widget, stretch=0)
+
+        self.setLayout(layout)
+
+    def plot_data(self, data_row: DataRow) -> None:
+        """Отрисовывает данные и обновляет легенду."""
+        # Очищаем легенду перед новой отрисовкой
+        self.legend_widget.update_legend([])
+        # Отрисовываем данные
+        legend_data = self.plot_widget.plot_row(data_row)
+        # Обновляем легенду
+        self.legend_widget.update_legend(legend_data)
+
+
+# Пример использования
+if __name__ == "__main__":
+    freq = linspace(100, 200, 100)
+    gamma_with = sin(freq / 10) + 0.1 * randn(100)
+    gamma_without = sin(freq / 10) + 0.05 * randn(100)
+    result_data = DataFrame({
+        "frequency": [freq[10], freq[30], freq[50], freq[80]],
+        "gamma": [gamma_with[10], gamma_with[30], gamma_with[50], gamma_with[80]],
+        "src": [True, False, True, False]
+    })
+    # Пример данных для intervals_positive
+    positive_intervals = sin(freq / 10) + 0.2 * randn(100)
+
+    data_row = DataRow(
+        with_substance=DataFrame({"frequency": freq, "gamma": gamma_with}),
+        without_substance=DataFrame({"frequency": freq, "gamma": gamma_without}),
+        result=result_data,
+        intervals_positive=positive_intervals,
+        intervals_negative=None
+    )
+
+    # Окно с отрисовкой данных
+    app = QApplication(sys.argv)
+
+    # Первый график для основных данных
+    plotter1 = Plotter()
+    plotter1.plot_data(data_row)
+    plotter1.setWindowTitle("Данные с веществом и без вещества")
+    plotter1.show()
+
+    # Второй график для intervals_positive
+    plotter2 = Plotter()
+    plotter2.plot_widget.plot_positive_interval(data_row.intervals_positive)
+    plotter2.legend_widget.update_legend(
+        [(plotter2.plot_widget.labeled_positive_color, plotter2.plot_widget.labeled_positive_text)])
+    plotter2.setWindowTitle("Размеченные интервалы (с точкой)")
+    plotter2.show()
+
+    sys.exit(app.exec())
