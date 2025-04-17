@@ -18,7 +18,7 @@ def parser_all_data(string_list: list) -> pd.DataFrame:
     return pd.DataFrame({'frequency': frequency_list, 'gamma': gamma_list})
 
 
-def parser_result_data(string_list: list) -> pd.DataFrame:
+def parser_result_data(string_list: list) -> pd.DataFrame | None:
     """
     Парсит данные результата в частоты, гамма и флаг источника.
 

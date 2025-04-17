@@ -1,10 +1,10 @@
 import sys
 import traceback
 from functools import partial
-
 from PySide6.QtWidgets import QApplication, QMessageBox
-from gui_logic import GuiProgram
-from src.plot_widget import DataPlotWidget
+
+from src.logger import log
+from src.gui_logic import GuiProgram
 from src.app_exception import AppException
 
 
@@ -20,6 +20,7 @@ def handle_exception(app, exc_type, exc_value, exc_traceback):
 
 
 def main():
+    log.info("="*20 + " Запуск приложения " + "="*20)
     # Инициализация приложения
     app = QApplication(sys.argv)
     # Установка обработчика исключений ДО запуска диалога
