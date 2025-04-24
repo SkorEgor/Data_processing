@@ -4,16 +4,17 @@ import pandas as pd
 from scipy.interpolate import interp1d
 from logger import log
 
+
 class DataRow:
     def __init__(
-        self,
-        with_substance_path: str | None = None,
-        without_substance_path: str | None = None,
-        result_path: str | None = None,
-        input_intervals_positive: np.ndarray | None = None,
-        input_intervals_negative: np.ndarray | None = None,
-        output_intervals_positive: np.ndarray | None = None,
-        output_intervals_negative: np.ndarray | None = None,
+            self,
+            with_substance_path: str | None = None,
+            without_substance_path: str | None = None,
+            result_path: str | None = None,
+            input_intervals_positive: np.ndarray | None = None,
+            input_intervals_negative: np.ndarray | None = None,
+            output_intervals_positive: np.ndarray | None = None,
+            output_intervals_negative: np.ndarray | None = None,
     ):
         self.with_substance_path = with_substance_path
         self.without_substance_path = without_substance_path
@@ -24,10 +25,12 @@ class DataRow:
         self.output_intervals_negative = output_intervals_negative
 
     def get_with_substance(self) -> pd.DataFrame | None:
-        return pd.read_csv(self.with_substance_path) if self.with_substance_path and os.path.exists(self.with_substance_path) else None
+        return pd.read_csv(self.with_substance_path) if self.with_substance_path and os.path.exists(
+            self.with_substance_path) else None
 
     def get_without_substance(self) -> pd.DataFrame | None:
-        return pd.read_csv(self.without_substance_path) if self.without_substance_path and os.path.exists(self.without_substance_path) else None
+        return pd.read_csv(self.without_substance_path) if self.without_substance_path and os.path.exists(
+            self.without_substance_path) else None
 
     def get_result(self) -> pd.DataFrame | None:
         return pd.read_csv(self.result_path) if self.result_path and os.path.exists(self.result_path) else None
@@ -84,7 +87,7 @@ class DataRow:
                 suffix = [freq_with.iloc[-1]] * (half_window - (len(freq_with) - idx - 1))
                 freq_segment = freq_with.iloc[start:].tolist() + suffix
                 gamma_segment = gamma_with.iloc[start:].tolist() + [gamma_with.iloc[-1]] * (
-                            half_window - (len(freq_with) - idx - 1))
+                        half_window - (len(freq_with) - idx - 1))
             else:
                 freq_segment = freq_with.iloc[start:end].tolist()
                 gamma_segment = gamma_with.iloc[start:end].tolist()
@@ -112,7 +115,7 @@ class DataRow:
                         suffix = [freq_with.iloc[-1]] * (half_window - (len(freq_with) - i - 1))
                         freq_segment = freq_with.iloc[start:].tolist() + suffix
                         gamma_segment = gamma_with.iloc[start:].tolist() + [gamma_with.iloc[-1]] * (
-                                    half_window - (len(freq_with) - i - 1))
+                                half_window - (len(freq_with) - i - 1))
                     else:
                         freq_segment = freq_with.iloc[start:end].tolist()
                         gamma_segment = gamma_with.iloc[start:end].tolist()
@@ -135,6 +138,7 @@ class DataRow:
                                                    negative_intervals]) if negative_intervals else None
         log.info(f"Создано {len(positive_intervals)} позитивных и {len(negative_intervals)} негативных интервалов")
         return True
+
 
 def interpolate_values(frequency, values, step=0.06):
     frequency = np.asarray(frequency)

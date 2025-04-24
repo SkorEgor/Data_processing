@@ -251,20 +251,93 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
             return
         row = self.selected_row_number
         self._show_status_message("Разметка данных...")
-        if not self.selected_row_data.mark_data(self.window_width):
+
+        # Получаем данные
+        with_substance = self.selected_row_data.get_with_substance()
+        result = self.selected_row_data.get_result()
+        if with_substance is None or result is None:
+            self._show_status_message("Для разметки нужны данные с веществом и результат")
+            log.error("Отсутствуют данные with_substance или result")
             return
+
+        freq_with = with_substance['frequency']
+        gamma_with = with_substance['gamma']
+        result_freq = result['frequency']
+        if freq_with.empty or gamma_with.empty or result_freq.empty:
+            self._show_status_message("Данные пусты или некорректны")
+            log.error("Пустые столбцы frequency или gamma")
+            return
+
+        labeled_data = []
+        half_window = self.window_width // 2
+
+        # Позитивные интервалы (с точками поглощения)
+        for point_freq in result_freq:
+            idx = min(range(len(freq_with)), key=lambda i: abs(freq_with[i] - point_freq))
+            start = max(0, idx - half_window)
+            end = min(len(freq_with), idx + half_window + 1)
+            if start == 0:
+                prefix = [freq_with.iloc[0]] * (half_window - idx)
+                freq_segment = prefix + freq_with.iloc[:end].tolist()
+                gamma_segment = [gamma_with.iloc[0]] * (half_window - idx) + gamma_with.iloc[:end].tolist()
+            elif end == len(freq_with):
+                suffix = [freq_with.iloc[-1]] * (half_window - (len(freq_with) - idx - 1))
+                freq_segment = freq_with.iloc[start:].tolist() + suffix
+                gamma_segment = gamma_with.iloc[start:].tolist() + [gamma_with.iloc[-1]] * (
+                            half_window - (len(freq_with) - idx - 1))
+            else:
+                freq_segment = freq_with.iloc[start:end].tolist()
+                gamma_segment = gamma_with.iloc[start:end].tolist()
+            labeled_data.append((freq_segment, gamma_segment, True))
+
+        # Индексы, занятые позитивными интервалами
+        point_indices = [min(range(len(freq_with)), key=lambda i: abs(freq_with[i] - f)) for f in result_freq]
+        used_indices = set()
+        for idx in point_indices:
+            used_indices.update(range(max(0, idx - half_window), min(len(freq_with), idx + half_window + 1)))
+
+        # Негативные интервалы (без точек поглощения)
+        unmarked_count = len(labeled_data)
+        i = 0
+        while len(labeled_data) < unmarked_count * 2 and i < len(freq_with):
+            if i not in used_indices:
+                start = max(0, i - half_window)
+                end = min(len(freq_with), i + half_window + 1)
+                if not any(start <= idx < end for idx in used_indices):
+                    if start == 0:
+                        prefix = [freq_with.iloc[0]] * (half_window - i)
+                        freq_segment = prefix + freq_with.iloc[:end].tolist()
+                        gamma_segment = [gamma_with.iloc[0]] * (half_window - i) + gamma_with.iloc[:end].tolist()
+                    elif end == len(freq_with):
+                        suffix = [freq_with.iloc[-1]] * (half_window - (len(freq_with) - i - 1))
+                        freq_segment = freq_with.iloc[start:].tolist() + suffix
+                        gamma_segment = gamma_with.iloc[start:].tolist() + [gamma_with.iloc[-1]] * (
+                                    half_window - (len(freq_with) - i - 1))
+                    else:
+                        freq_segment = freq_with.iloc[start:end].tolist()
+                        gamma_segment = gamma_with.iloc[start:end].tolist()
+                    labeled_data.append((freq_segment, gamma_segment, False))
+                    used_indices.update(range(start, end))
+            i += 1
+
+        # Создаем DataFrame для размеченных данных
+        df = pd.DataFrame({
+            'frequency': [f for freq_segment, _, _ in labeled_data for f in freq_segment],
+            'gamma': [g for _, gamma_segment, _ in labeled_data for g in gamma_segment],
+            'label': [l for _, _, l in labeled_data for _ in range(len(labeled_data[0][0]))]
+        })
+
+        # Сохраняем в CSV
         row_dir = self.ensure_row_dir(row)
-        for attr, fname in [
-            ("input_intervals_positive", "positive.npy"),
-            ("input_intervals_negative", "negative.npy"),
-            ("output_intervals_positive", "output_positive.npy"),
-            ("output_intervals_negative", "output_negative.npy")
-        ]:
-            if getattr(self.selected_row_data, attr) is not None:
-                np.save(os.path.join(row_dir, fname), getattr(self.selected_row_data, attr))
-        self.data_files.at[row, "labeled"] = "interval_starts"
+        output_file = os.path.join(row_dir, f"labeled_data_row_{row}.csv")
+        df.to_csv(output_file, index=False)
+
+        # Обновляем DataRow и таблицу
+        self.data_files.at[row, "labeled"] = os.path.basename(output_file)
         self._update_table_cell(row, 4, "Размечено")
-        self._show_status_message("Разметка завершена")
+        self.save_state()  # Сохраняем состояние после разметки
+        self._show_status_message(f"Разметка завершена, сохранено в {output_file}")
+        log.info(f"Разметка завершена для строки {row}, сохранено в {output_file}")
 
     def interpolate_selected_row(self):
         """Интерполирует данные выбранной строки."""
@@ -408,16 +481,21 @@ class GuiProgram(QMainWindow, Ui_MainWindow):
                 if row_data.get(key) and os.path.exists(os.path.join(row_dir, row_data[key])):
                     self.data_files.at[row, key] = row_data[key]
                     self._update_table_cell(row, col, row_data[key])
-            if row_data.get("labeled"):
-                self.data_files.at[row, "labeled"] = "interval_starts"
+            # Проверяем поле labeled
+            labeled_file = row_data.get("labeled")
+            if labeled_file and os.path.exists(os.path.join(row_dir, labeled_file)):
+                self.data_files.at[row, "labeled"] = labeled_file
                 self._update_table_cell(row, 4, "Размечено")
-        selected_row = state.get("selected_row", 0)  # Значение по умолчанию — 0
+            else:
+                self.data_files.at[row, "labeled"] = None
+                self._update_table_cell(row, 4, "")
+        selected_row = state.get("selected_row", 0)
         if selected_row is not None and selected_row < self.tableWidget.rowCount():
             self.selected_row_number = selected_row
             self.tableWidget.selectRow(selected_row)
             self.plot_selected_row()
         else:
-            self.tableWidget.selectRow(0)  # Выбираем первую строку по умолчанию
+            self.tableWidget.selectRow(0)
             self.plot_selected_row()
         log.info(f"Загружено строк: {self.tableWidget.rowCount()}")
 
