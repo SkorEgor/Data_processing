@@ -3,9 +3,7 @@ import traceback
 from functools import partial
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from src.logger import log
 from src.gui_logic import GuiProgram
-from src.app_exception import AppException
 
 
 def handle_exception(app, exc_type, exc_value, exc_traceback):
@@ -13,14 +11,10 @@ def handle_exception(app, exc_type, exc_value, exc_traceback):
     print("Произошла необработанная ошибка:", file=sys.stderr)
     traceback.print_exception(exc_type, exc_value, exc_traceback)
     parent = app.activeWindow()
-    if isinstance(exc_value, AppException):
-        QMessageBox.warning(parent, exc_value.title, exc_value.message)
-    else:
-        QMessageBox.critical(parent, "Необработанная ошибка", str(exc_value))
+    QMessageBox.critical(parent, "Необработанная ошибка", str(exc_value))
 
 
 def main():
-    log.info("="*20 + " Запуск приложения " + "="*20)
     # Инициализация приложения
     app = QApplication(sys.argv)
     # Установка обработчика исключений ДО запуска диалога

@@ -11,7 +11,7 @@ from PySide6.QtGui import QColor, QPixmap, Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget, QApplication
 from pyqtgraph.Qt.QtCore import Signal
 
-from src.data_row import DataRow
+from src.row_data import RowData
 
 
 def clearer_layout(layout) -> None:
@@ -55,24 +55,23 @@ class SpectrometerPlotWidget(pg.PlotWidget):
         self.setMinimumSize(400, 300)
         self.enableAutoRange(x=True, y=True)
 
-    def plot_row(self, data_row: DataRow):
-        """Отрисовывает данные из DataRow и возвращает данные для легенды."""
+    def plot_row(self, data_row: RowData):
+        _, _, data_row = data_row
+        """Отрисовывает данные из RowData и возвращает данные для легенды."""
         # Очищаем предыдущие данные
         self.clear()
         legend_data = []
         logging.info("Отрисовка данных для строки")
 
         # Получаем данные через методы
-        with_substance = data_row.get_with_substance()
-        without_substance = data_row.get_without_substance()
-        result = data_row.get_result()
+        with_substance = data_row.with_substance
+        without_substance = data_row.without_substance
+        result = data_row.absorption_lines
 
         has_data = any([
             isinstance(with_substance, DataFrame) and not with_substance.empty,
             isinstance(without_substance, DataFrame) and not without_substance.empty,
-            isinstance(result, DataFrame) and not result.empty,
-            data_row.input_intervals_positive is not None,
-            data_row.input_intervals_negative is not None
+            isinstance(result, DataFrame) and not result.empty
         ])
 
         # Нет данных
@@ -275,7 +274,7 @@ if __name__ == "__main__":
     positive_intervals = sin(freq / 10) + 0.2 * randn(100)
     output_intervals_positive = np.array([0] * len(positive_intervals))
     output_intervals_positive[randint(a=0, b=len(positive_intervals))] = 1
-    data_row = DataRow(
+    data_row = RowData(
         with_substance=DataFrame({"frequency": freq, "gamma": gamma_with}),
         without_substance=DataFrame({"frequency": freq, "gamma": gamma_without}),
         result=result_data,

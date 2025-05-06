@@ -69,35 +69,6 @@
        <property name="spacing">
         <number>0</number>
        </property>
-       <item row="0" column="0">
-        <widget class="QTableWidget" name="tableWidget">
-         <column>
-          <property name="text">
-           <string>Удалить</string>
-          </property>
-         </column>
-         <column>
-          <property name="text">
-           <string>С веществом</string>
-          </property>
-         </column>
-         <column>
-          <property name="text">
-           <string>Без вещества</string>
-          </property>
-         </column>
-         <column>
-          <property name="text">
-           <string>Результат</string>
-          </property>
-         </column>
-         <column>
-          <property name="text">
-           <string>Размеченные данные</string>
-          </property>
-         </column>
-        </widget>
-       </item>
       </layout>
      </widget>
     </item>
